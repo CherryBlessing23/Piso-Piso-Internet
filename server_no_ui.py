@@ -1,0 +1,1001 @@
+from flask import Flask, render_template, request, redirect, url_for, jsonify, session
+from flask_socketio import SocketIO, emit, close_room, disconnect
+from flask_cors import CORS
+import sqlite3
+import datetime
+from datetime import timedelta, datetime
+from functools import wraps
+import eventlet
+import eventlet.hubs.epolls
+import eventlet.hubs.kqueue
+import eventlet.hubs.selects
+import threading
+import time
+import logging
+
+
+app = Flask(__name__)
+CORS(app)
+
+app.config["DATABASE"] = "pisonet.db"
+app.secret_key = "AT6vzxmUEfNZbKIG8y0uNQHn64v01D8x"  # Add a secret key for session management
+
+socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=300, ping_interval=20)
+
+serverIP = '192.168.1.3'
+
+clients = {}
+heartbeat_interval = 10
+logging.basicConfig(level=logging.INFO)
+db_update_interval = 10
+
+def data_execute(query, params=(), fetch_one=False, commit=False):
+    try:
+        conn = sqlite3.connect('pisonet.db')
+        conn.row_factory = sqlite3.Row  # This will return rows as dictionaries
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        if commit:
+            conn.commit()
+        if fetch_one:
+            result = cursor.fetchone()
+            return dict(result) if result else None
+        else:
+            return [dict(row) for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'admin_logged_in' not in session:
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def login_required_user(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_logged_in' not in session:
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/online_clients')
+def online_clients():
+    return render_template('online_clients.html', clients=clients)
+
+def timedelta_to_seconds(td):
+    if isinstance(td, timedelta):
+        return td.total_seconds()
+    raise TypeError(f"Expected timedelta object, got {type(td)}")
+
+def monitor_heartbeats():
+    with app.app_context():
+        while True:
+            current_time = time.time()
+            for client_id, client_data in list(clients.items()):
+                if current_time - client_data['last_heartbeat'] > heartbeat_interval * 2:
+                    logging.info(f"Disconnecting client {client_id} due to missed heartbeat")
+                    handle_disconnect(client_id)
+            time.sleep(heartbeat_interval)
+
+def update_client_time_remaining(client_id):
+    while True:
+        with app.app_context():
+            if client_id in clients:
+                client = clients[client_id]
+                if client.get('terminate', False):
+                    break
+                if client.get('username', None):
+                    username = None
+                else:
+                    username = client['username']
+                time_remaining = client['time_remaining']
+
+                if time_remaining is not None:
+                    if time_remaining > timedelta(0):
+                        time_remaining -= timedelta(seconds=1)
+                        clients[client_id]['time_remaining'] = time_remaining
+
+                    if time_remaining <= timedelta(0):
+                        logging.info(f"Timer reached zero for client {client_id}, updating database to 00:00:00")
+                        update_query = "UPDATE account SET time_remaining = ? WHERE username = ?"
+                        data_execute(update_query, (str(timedelta(0)), username), commit=True)
+                        handle_logout({'time_remaining': '00:00:00'}, client_id, from_thread=True)
+                        break
+
+                time.sleep(1)
+            else:
+                break
+
+@socketio.on('connect')
+def handle_connect(auth):
+    # Convert `timedelta` to a serializable format
+    serialized_clients = {
+        client_id: {
+            **client_data,
+            'time_remaining': str(client_data['time_remaining'])  # Or use .total_seconds() if needed
+        }
+        for client_id, client_data in clients.items()
+    }
+    emit('message', {'event': 'connected', 'client_id': request.sid, 'clients': serialized_clients})
+
+@socketio.on('disconnect')
+def handle_disconnect(client_id=None):
+    if client_id is None:
+        client_id = request.sid
+    if client_id in clients:
+        clients[client_id]['terminate'] = True
+        client_info = clients.pop(client_id)
+        username = client_info.get('username')
+        time_remaining = client_info.get('time_remaining')
+        if time_remaining is not None:
+            update_query = "UPDATE account SET time_remaining = ? WHERE username = ?"
+            data_execute(update_query, (str(time_remaining), username), commit=True)
+            logging.info(f"Client disconnected: {client_id} and time updated to {time_remaining}")
+
+@socketio.on('login_guest')
+def handle_login_guest(data):
+    client_id = request.sid
+    if data.get('client_ID') == '':
+        emit('login_response_guest', {'success': False, 'error': 'No client_id'})
+        return
+
+    client_ID = data.get('client_id')
+    add_time_minutes = data.get('add_time')
+    add_to_server = data.get('add_to_server', False)
+
+    if client_ID is None or add_time_minutes is None:
+        app.logger.error("Missing 'client_ID' or 'add_time' in the request")
+        emit('login_response_guest', {'success': False, 'error': 'Missing required fields'})
+        return
+
+    # Convert add_time from minutes to seconds
+    try:
+        add_time_minutes = int(add_time_minutes)
+    except ValueError:
+        app.logger.error("Invalid 'add_time' format, must be an integer")
+        emit('login_response_guest', {'success': False, 'error': 'Invalid add_time format'})
+        return
+
+    additional_seconds = add_time_minutes * 60
+    client_found = False
+
+    if add_to_server:
+        for client_id, client_data in clients.items():
+            if client_id == client_ID:
+                current_client_time = client_data.get('time_remaining', timedelta())
+                current_client_seconds = current_client_time.total_seconds()
+                updated_time_seconds = current_client_seconds + additional_seconds
+                updated_time = seconds_to_time(updated_time_seconds)
+
+                clients[client_id]['time_remaining'] = timedelta(seconds=updated_time_seconds)
+
+                # Convert updated_time to string before emitting
+                socketio.emit('update_time', {'time_remaining': str(updated_time)}, room=client_id)
+
+                client_found = True
+                break
+
+        if client_found:
+            emit('login_response_guest', {'success': True, 'message': 'Time updated successfully on server', 'time_remaining': str(clients[client_id]['time_remaining'])})
+        else:
+            emit('login_response_guest', {'success': False, 'error': 'Client not found'})
+    else:
+        # Handle the non-add_to_server case
+        clients[client_id] = {
+            'username': None,
+            'time_remaining': timedelta(seconds=additional_seconds),
+            'last_heartbeat': time.time(),
+            'terminate': False
+        }
+
+        # Convert all timedelta objects in the clients dictionary to strings
+        clients_serializable = {k: v.copy() for k, v in clients.items()}
+        for cid, cdata in clients_serializable.items():
+            if isinstance(cdata['time_remaining'], timedelta):
+                cdata['time_remaining'] = str(cdata['time_remaining'])
+
+        emit('login_response_guest', {
+            'success': True,
+            'client_id': client_id,
+            'time_remaining': str(timedelta(seconds=additional_seconds)),
+            'clients': clients_serializable
+        })
+        threading.Thread(target=update_client_time_remaining, args=(client_id,), daemon=True).start()
+        logging.info(f"Client {client_id} logged in successfully")
+
+@socketio.on('login')
+def handle_login(data):
+    client_id = request.sid
+    if data.get('username') == '' and data.get('password') == '':
+        emit('login_response', {'success': False, 'error': 'No input'})
+        return
+    username = data.get('username')
+    password = data.get('password')
+    
+    logging.info(f"Received login request from client {client_id} with username {username}")
+
+    user_query = "SELECT idnumber, time_remaining FROM account WHERE username = ? AND password = ?"
+    user = data_execute(user_query, (username, password), fetch_one=True)
+
+    if isinstance(user, dict):  # Check if the result is a dictionary
+        idnumber = user.get('idnumber')
+        time_remaining_str = user.get('time_remaining')
+
+        if isinstance(time_remaining_str, str):
+            try:
+                hours, minutes, seconds = map(int, time_remaining_str.split(':'))
+                time_remaining = timedelta(hours=hours, minutes=minutes, seconds=seconds)
+            except ValueError:
+                logging.error(f"Time format is incorrect: {time_remaining_str}")
+                time_remaining = timedelta()  # Default to 0 if parsing fails
+        else:
+            try:
+                time_remaining = timedelta(seconds=int(time_remaining_str))
+            except ValueError:
+                logging.error(f"Time format is incorrect: {time_remaining_str}")
+                time_remaining = timedelta()  # Default to 0 if parsing fails
+
+        clients[client_id] = {
+            'idnumber': idnumber,
+            'username': username,
+            'time_remaining': time_remaining,
+            'last_heartbeat': time.time(),
+            'terminate': False
+        }
+
+        # Send the `idnumber` and `time_remaining` to the client
+        emit('login_response', {
+            'success': True,
+            'idnumber': idnumber,
+            'time_remaining': str(time_remaining)
+        })
+        threading.Thread(target=update_client_time_remaining, args=(client_id,), daemon=True).start()
+        logging.info(f"Client {client_id} logged in successfully")
+    elif isinstance(user, list):  # Handle unexpected list results
+        logging.error(f"Unexpected result format: {user}")
+        emit('login_response', {'success': False, 'error': 'Unexpected result format'})
+    else:
+        emit('login_response', {'success': False, 'error': 'Invalid Credentials'})
+        logging.info(f"Login failed for client {client_id}")
+
+@socketio.on('logout')
+def handle_logout(data, client_id=None, from_thread=False):
+    if client_id is None:
+        client_id = request.sid
+    if client_id in clients:
+        clients[client_id]['terminate'] = True
+        client_info = clients.pop(client_id)
+        username = client_info.get('username')
+        time_remaining = client_info.get('time_remaining')
+        if time_remaining is not None:
+            update_query = "UPDATE account SET time_remaining = ? WHERE username = ?"
+            data_execute(update_query, (str(time_remaining), username), commit=True)
+            logging.info(f"Client {client_id} logged out and time updated to {time_remaining}")
+        if not from_thread:
+            disconnect()
+        else:
+               socketio.server.close_room(client_id)
+
+@socketio.on('update_time')
+def handle_update_time(data):
+    client_id = request.sid
+    if client_id in clients:
+        time_remaining_str = data.get('time_remaining')
+        if isinstance(time_remaining_str, str):
+            try:
+                hours, minutes, seconds = map(int, time_remaining_str.split(':'))
+                time_remaining = timedelta(hours=hours, minutes=minutes, seconds=seconds)
+            except ValueError:
+                logging.error(f"Invalid time format received: {time_remaining_str}")
+                time_remaining = timedelta()
+        else:
+            try:
+                time_remaining = timedelta(seconds=int(time_remaining_str))
+            except ValueError:
+                logging.error(f"Invalid time format received: {time_remaining_str}")
+                time_remaining = timedelta()
+        
+        clients[client_id]['time_remaining'] = time_remaining
+        # logging.info(f"Updated time remaining for client {client_id} to {time_remaining}")
+    else:
+        logging.error(f"Client {client_id} not found in clients dictionary")
+
+@socketio.on('heartbeat')
+def handle_heartbeat():
+    client_id = request.sid
+    if client_id in clients:
+        clients[client_id]['last_heartbeat'] = time.time()
+        #logging.info(f"Heartbeat received from client {client_id}")
+
+# Start the heartbeat monitor thread
+threading.Thread(target=monitor_heartbeats, daemon=True).start()
+
+@app.route('/add_sales_inventory', methods=['POST'])
+def add_sales_inventory():
+    data = request.json
+    if not data:
+        return jsonify({"success": False, "message": "No JSON data received"}), 400
+
+    amount = data.get('amount')
+    account_id = data.get('account_id')
+    date = data.get('date')
+
+    query = "INSERT INTO sales_inventory (amount, account_id, date) VALUES (?, ?, ?)"
+    result = data_execute(query, (amount, account_id, date), commit=True)
+
+    if result is not None and 'error' not in result:
+        return jsonify({"Success": True, "message": "Added sales successfully"}), 200
+    else:
+        return jsonify({"Success": False, "message": "Failed to add sales into inventory"}), 500
+
+
+@app.route('/admin_login', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        data = request.form
+        username = data.get('username')
+        password = data.get('password')
+
+        query = "SELECT * FROM admin WHERE username = ? AND password = ?"
+        result = data_execute(query, (username, password), fetch_one=True)
+
+        if result:
+            session['admin_logged_in'] = True
+            session['admin_username'] = username
+            return redirect(url_for('admin_dashboard'))
+        else:
+            return jsonify({"success": False, "message": "Invalid User ID, Password, or Insufficient Privileges"}), 401
+    return render_template('admin.html')
+
+@app.route('/web_login', methods=['POST'])
+def web_login():
+    if request.method == 'POST':
+        data = request.form
+        idnumber_user = data.get('idnumber_user')
+        password = data.get('password')
+
+        # Query to select all columns from the account table
+        query = "SELECT * FROM account WHERE (idnumber = ? OR username = ?) AND password = ?"
+        result = data_execute(query, (idnumber_user, idnumber_user, password), fetch_one=True)
+        print(f"web login: {result}")
+
+        if result:
+            session['user_logged_in'] = True
+            session['user_username_id'] = idnumber_user
+            
+            # Fetch earned_points
+            earned_points = result.get('earned_points', 0)
+            session['earned_points'] = earned_points
+            
+            # Find the client_id from the clients dictionary using username
+            client_id = next((cid for cid, client in clients.items() if client['username'] == result['username']), None)
+
+            if client_id and client_id in clients:
+                time_remaining = clients[client_id].get('time_remaining', timedelta(0))  # Default to 0 if not found
+                session['time_remaining'] = str(time_remaining)
+                
+                # Redirect to user_account route
+                return redirect(url_for('user_account'))
+
+            return jsonify({"success": False, "message": "Client not found. Not Online"}), 404
+
+        else:
+            return jsonify({"success": False, "message": "Invalid idnumber, username, or password"}), 401
+            
+    return render_template('index.html')
+
+@app.route('/user_account')
+@login_required_user
+def user_account():
+    if 'user_logged_in' in session:
+        idnumber = session.get('user_username_id')
+        earned_points = session.get('earned_points', 0)
+        time_remaining = session.get('time_remaining', '00:00:00')
+        return render_template('user_account.html', earned_points=earned_points, time_remaining=time_remaining, idnumber=idnumber)
+    else:
+        return redirect(url_for('index'))  # Redirect to index or login if not logged in
+
+@app.route('/user_logout')
+def user_logout():
+    session.pop('user_logged_in', None)
+    session.pop('user_username_id', None)
+    session.pop('earned_points', None)
+    return redirect(url_for('index'))
+
+@app.route('/redeem_time', methods=['POST'])
+def redeem_time():
+    idnumber = session.get('user_username_id')  # Get the value from the session
+    earned_points = session.get('earned_points') or 0
+
+    points_per_hour = 1  # Points needed for 1 hour
+    print(f"Session user_username_id: {idnumber}")
+    print(f"earned_points: {earned_points}")
+
+    # Find the client ID based on username or idnumber
+    client_id = next((cid for cid, client in clients.items() 
+                      if client['username'] == idnumber or str(client['idnumber']) == idnumber), 
+                      None)
+
+    if client_id:
+        if earned_points >= points_per_hour:
+            # 1 hour in seconds
+            additional_seconds = 3600  
+
+            # Ensure time_remaining is a timedelta, and add 1 hour to it
+            if not isinstance(clients[client_id]['time_remaining'], timedelta):
+                clients[client_id]['time_remaining'] = timedelta(seconds=time_to_seconds(clients[client_id]['time_remaining']))
+            
+            clients[client_id]['time_remaining'] += timedelta(seconds=additional_seconds)
+
+            # Deduct points from the session and database
+            session['earned_points'] -= points_per_hour
+            
+            query = "UPDATE account SET earned_points = earned_points - ? WHERE idnumber = ? OR username = ?"
+            data_execute(query, (points_per_hour, idnumber, idnumber), commit=True)
+
+            # Emit the updated time to the client
+            socketio.emit('update_time', {'time_remaining': str(clients[client_id]['time_remaining'])}, room=client_id)
+
+            return jsonify(success=True, message="Time redeemed successfully", time_remaining=str(clients[client_id]['time_remaining']))
+        else:
+            return jsonify(success=False, message="Not enough points to redeem", earned_points=earned_points), 403
+    else:
+        return jsonify(success=False, message="Client not found", earned_points=earned_points), 404
+
+
+
+@app.route('/check_id', methods=['POST'])
+def check_id():
+    try:
+        data = request.get_json()
+        idnumber_user = data.get('idnumber') # or username
+
+        if not idnumber_user:
+            print("id not provided")
+            return jsonify({"success": False, "message": "ID number not provided"}), 400
+
+        query = "SELECT time_remaining FROM account WHERE idnumber = ? OR username = ?"
+        result = data_execute(query, (idnumber_user, idnumber_user), fetch_one=True)
+
+        print(f"result: {result}")
+
+        if result and result['time_remaining']:
+            time_remaining = result['time_remaining']
+            # Parse time_remaining manually
+            h, m, s = map(int, time_remaining.split(':'))
+            total_seconds_remaining = h * 3600 + m * 60 + s
+
+            rates_query = "SELECT amount, time, points_multiplier FROM rates"
+            rates = data_execute(rates_query)
+            rates = [{"amount": rate["amount"], "total_seconds": int(rate["time"].split(':')[0]) * 3600 + int(rate["time"].split(':')[1]) * 60 + int(rate["time"].split(':')[2]), "points_multiplier": rate['points_multiplier']} for rate in rates]
+
+            return jsonify({"success": True, "rates": rates, "time_remaining": str(timedelta(seconds=total_seconds_remaining))}), 200
+        else:
+            return jsonify({"success": False, "message": "Invalid ID number or Not existing ID number"}), 404
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route('/admin_dashboard')
+@login_required
+def admin_dashboard():
+    return render_template('admin_dashboard.html')
+
+
+@app.route('/admin_logout')
+def admin_logout():
+    session.pop('admin_logged_in', None)
+    session.pop('admin_username', None)
+    return redirect(url_for('admin_login'))
+
+@app.route('/get_rates', methods=['GET'])
+def get_rates():
+    query = """
+        SELECT amount,
+               (CAST(strftime('%H', time) AS INTEGER) * 3600 +
+                CAST(strftime('%M', time) AS INTEGER) * 60 +
+                CAST(strftime('%S', time) AS INTEGER)) AS total_seconds,
+                points_multiplier
+        FROM rates
+    """
+    rates = data_execute(query)
+    
+    if "error" in rates:
+        return jsonify({"success": False, "error": rates["err   or"]}), 500
+    
+    # Debugging: Print raw data
+    print(f"Raw rates data: {rates}")
+
+    formatted_rates = []
+    for rate in rates:
+        amount = rate['amount']
+        total_seconds_str = rate['total_seconds']
+        points_multiplier = rate.get('points_multiplier', 0)
+
+        # Debugging: Print extracted values
+        print(f"Extracted amount: {amount}, total_seconds_str: {total_seconds_str}, points_multiplier: {points_multiplier}")
+
+        try:
+            total_seconds = int(total_seconds_str)  # Convert to integer
+            print(f"Converted total_seconds: {total_seconds}")  # Debug print
+        except ValueError as e:
+            return jsonify({"success": False, "error": f"Invalid total_seconds value: {total_seconds_str}"}), 500
+        
+        days = total_seconds // 86400
+        hours = (total_seconds % 86400) // 3600
+        minutes = (total_seconds % 3600) // 60
+        formatted_rates.append({
+            'amount': amount,
+            'total_seconds': total_seconds,
+            'points_multiplier': points_multiplier,
+            'days': days,
+            'hours': hours,
+            'minutes': minutes
+        })
+
+        print(f"formatted rates: {formatted_rates} ")
+    return jsonify({"success": True, "rates": formatted_rates}), 200
+
+@app.route('/get_rates_guest', methods=['GET'])
+def get_rates_guest():
+    query = """
+        SELECT amount_guest,
+               (CAST(strftime('%H', time_guest) AS INTEGER) * 3600 +
+                CAST(strftime('%M', time_guest) AS INTEGER) * 60 +
+                CAST(strftime('%S', time_guest) AS INTEGER)) AS total_seconds
+        FROM rates_guest
+    """
+    rates = data_execute(query)
+    print(f"result rates: {rates}")
+    if "error" in rates:
+        return jsonify({"success": False, "error": rates["error"]}), 500
+    
+    # Debugging: Print raw data
+    print(f"Raw rates data: {rates}")
+
+    formatted_rates = []
+    for rate in rates:
+        amount = rate['amount_guest']
+        total_seconds_str = rate['total_seconds']
+        
+        # Debugging: Print extracted values
+        print(f"Extracted amount: {amount}, total_seconds_str: {total_seconds_str}")
+
+        try:
+            total_seconds = int(total_seconds_str)  # Convert to integer
+            print(f"Converted total_seconds: {total_seconds}")  # Debug print
+        except ValueError as e:
+            return jsonify({"success": False, "error": f"Invalid total_seconds value: {total_seconds_str}"}), 500
+        
+        days = total_seconds // 86400
+        hours = (total_seconds % 86400) // 3600
+        minutes = (total_seconds % 3600) // 60
+        formatted_rates.append({
+            'amount': amount,
+            'total_seconds': total_seconds,
+            'days': days,
+            'hours': hours,
+            'minutes': minutes
+        })
+
+        print(f"formatted rates: {formatted_rates} ")
+    return jsonify({"success": True, "rates": formatted_rates}), 200
+
+@app.route('/guest_rates')
+def guest_rates():
+    rates_query = "SELECT amount_guest, time_guest FROM rates_guest"
+    rates = data_execute(rates_query)
+    rates = [{"amount": rate["amount_guest"], "total_seconds": int(rate["time_guest"].split(':')[0]) * 3600 + int(rate["time_guest"].split(':')[1]) * 60 + int(rate["time_guest"].split(':')[2])} for rate in rates]
+
+    return jsonify({"success": True, "rates": rates}), 200
+
+@app.route('/rates')
+@login_required
+def rates():
+    query = "SELECT idrates, amount, time, points_multiplier FROM rates"
+    rates = data_execute(query)
+    
+    # Debug output for fetched data
+    print("Fetched rates data:", rates)
+    
+    formatted_rates = []
+    points_multiplier = None
+    
+    for rate in rates:
+        # Extract values from the dictionary
+        idrates = rate.get('idrates')
+        amount = rate.get('amount')
+        time_str = rate.get('time')
+        points_multiplier = rate.get('points_multiplier')
+        
+        # Debug output for individual rate processing
+        print(f"Processing rate - idrates: {idrates}, amount: {amount}, time_str: '{time_str}'")
+        
+        if isinstance(time_str, str) and time_str.strip():
+            time_str = time_str.strip()  # Trim any extra whitespace
+            
+            try:
+                # Convert the TIME string to a datetime object
+                time_obj = datetime.strptime(time_str, '%H:%M:%S')
+                
+                # Convert TIME to total seconds since start of the day
+                total_seconds = time_obj.hour * 3600 + time_obj.minute * 60 + time_obj.second
+                
+                # Calculate days, hours, and minutes
+                days = total_seconds // 86400
+                hours = (total_seconds % 86400) // 3600
+                minutes = (total_seconds % 3600) // 60
+                
+                formatted_rates.append({
+                    'idrates': idrates,
+                    'amount': amount,
+                    'total_seconds': total_seconds,
+                    'days': days,
+                    'hours': hours,
+                    'minutes': minutes
+                })
+            except ValueError as e:
+                # Log the error and skip the invalid rate
+                print(f"Error processing time_str: '{time_str}' for idrates: {idrates}. Error: {e}")
+                continue
+        else:
+            # Log invalid time_str for debugging
+            print(f"Skipping rate with idrates: {idrates} due to invalid time_str: '{time_str}'")
+    
+    # Check if formatted_rates is empty and handle accordingly
+    
+    
+    query = "SELECT idrates_guest, amount_guest, time_guest FROM rates_guest"
+    rates_guest = data_execute(query)
+    
+    # Debug output for fetched data
+    print("Fetched rates data:", rates_guest)
+    
+    formatted_rates_guest = []
+    
+    for rate_guest in rates_guest:
+        # Extract values from the dictionary
+        idrates_guest = rate_guest.get('idrates_guest')
+        amount_guest = rate_guest.get('amount_guest')
+        time_guest_str = rate_guest.get('time_guest')
+        
+        # Debug output for individual rate processing
+        print(f"Processing rate - idrates_guest: {idrates_guest}, amount_guest: {amount_guest}, time_str: '{time_guest_str}'")
+        
+        if isinstance(time_guest_str, str) and time_guest_str.strip():
+            time_guest_str = time_guest_str.strip()  # Trim any extra whitespace
+            
+            try:
+                # Convert the TIME string to a datetime object
+                time_obj_guest = datetime.strptime(time_guest_str, '%H:%M:%S')
+                
+                # Convert TIME to total seconds since start of the day
+                total_seconds_guest = time_obj_guest.hour * 3600 + time_obj_guest.minute * 60 + time_obj_guest.second
+                
+                # Calculate days, hours, and minutes
+                days_guest = total_seconds_guest // 86400
+                hours_guest = (total_seconds_guest % 86400) // 3600
+                minutes_guest = (total_seconds_guest % 3600) // 60
+                
+                formatted_rates_guest.append({
+                    'idrates_guest': idrates_guest,
+                    'amount_guest': amount_guest,
+                    'total_seconds_guest': total_seconds_guest,
+                    'days_guest': days_guest,
+                    'hours_guest': hours_guest,
+                    'minutes_guest': minutes_guest
+                })
+            except ValueError as e:
+                # Log the error and skip the invalid rate
+                print(f"Error processing time_str: '{time_guest_str}' for idrates: {idrates_guest}. Error: {e}")
+                continue
+        else:
+            # Log invalid time_str for debugging
+            print(f"Skipping rate with idrates: {idrates_guest} due to invalid time_str: '{time_guest_str}'")
+    
+    # Check if formatted_rates is empty and handle accordingly
+    if not formatted_rates and not formatted_rates_guest:
+        print("No valid rates to display.")
+
+    return render_template('rates.html', rates=formatted_rates, rates_guest=formatted_rates_guest, points_multiplier=points_multiplier)
+
+@app.route('/add_rate', methods=['POST'])
+@login_required
+def add_rate():
+    amount = request.form['amount']
+    days = int(request.form['days'])
+    hours = int(request.form['hours'])
+    minutes = int(request.form['minutes'])
+    total_seconds = days * 86400 + hours * 3600 + minutes * 60
+    time_str = f"{total_seconds // 3600:02}:{(total_seconds % 3600) // 60:02}:00"
+    query = "INSERT INTO rates (amount, time) VALUES (?, ?)"
+    data_execute(query, (amount, time_str), commit=True)
+    return redirect(url_for('rates'))
+
+@app.route('/edit_rate/<int:id>', methods=['POST'])
+@login_required
+def edit_rate(id):
+    amount = request.form['amount']
+    days = int(request.form['days'])
+    hours = int(request.form['hours'])
+    minutes = int(request.form['minutes'])
+    total_seconds = days * 86400 + hours * 3600 + minutes * 60
+    time_str = f"{total_seconds // 3600:02}:{(total_seconds % 3600) // 60:02}:00"
+    query = "UPDATE rates SET amount = ?, time = ? WHERE idrates = ?"
+    data_execute(query, (amount, time_str, id), commit=True)
+    return redirect(url_for('rates'))
+
+
+@app.route('/delete_rate/<int:id>', methods=['POST'])
+@login_required
+def delete_rate(id):
+    query = "DELETE FROM rates WHERE idrates = ?"
+    data_execute(query, (id,), commit=True)
+    return redirect(url_for('rates'))
+
+@app.route('/guest_add_rate', methods=['POST'])
+@login_required
+def guest_add_rate():
+    amount = request.form['amount_guest']
+    days = int(request.form['days_guest'])
+    hours = int(request.form['hours_guest'])
+    minutes = int(request.form['minutes_guest'])
+    total_seconds = days * 86400 + hours * 3600 + minutes * 60
+    time_str = f"{total_seconds // 3600:02}:{(total_seconds % 3600) // 60:02}:00"
+    query = "INSERT INTO rates_guest (amount_guest, time_guest) VALUES (?, ?)"
+    data_execute(query, (amount, time_str), commit=True)
+    return redirect(url_for('rates'))
+
+@app.route('/guest_edit_rate/<int:id>', methods=['POST'])
+@login_required
+def guest_edit_rate(id):
+    amount = request.form['amount_guest']
+    days = int(request.form['days_guest'])
+    hours = int(request.form['hours_guest'])
+    minutes = int(request.form['minutes_guest'])
+    total_seconds = days * 86400 + hours * 3600 + minutes * 60
+    time_str = f"{total_seconds // 3600:02}:{(total_seconds % 3600) // 60:02}:00"
+    query = "UPDATE rates_guest SET amount_guest = ?, time_guest = ? WHERE idrates_guest = ?"
+    data_execute(query, (amount, time_str, id), commit=True)
+    return redirect(url_for('rates'))
+
+@app.route('/guest_delete_rate/<int:id>', methods=['POST'])
+@login_required
+def guest_delete_rate(id):
+    query = "DELETE FROM rates_guest WHERE idrates_guest = ?"
+    data_execute(query, (id,), commit=True)
+    return redirect(url_for('rates'))
+
+@app.route('/edit_points_multiplier', methods=['POST'])
+@login_required
+def edit_points_multiplier():
+    new_multiplier = request.form.get('points_multiplier')
+
+    # Validate and process the new multiplier
+    if new_multiplier is not None:
+        try:
+            new_multiplier = float(new_multiplier)
+            # Update the points_multiplier in the database
+            update_query = "UPDATE rates SET points_multiplier = ?"  # Define your condition
+            data_execute(update_query, (new_multiplier,), commit=True)
+            return redirect(url_for('rates', success='Points Multiplier updated successfully!'))
+        except ValueError:
+            return redirect(url_for('rates', error='Invalid points multiplier value.'))
+
+    return redirect(url_for('rates'))
+
+@app.route('/sales_inventory')
+@login_required
+def sales_inventory():
+    page = request.args.get('page', 1, type=int)
+    per_page = 10
+
+    start = (page - 1) * per_page
+    end = start + per_page
+
+    query = "SELECT amount, account_id, date FROM sales_inventory ORDER BY date DESC"
+    sales_inventory = data_execute(query)
+
+    paginated_inventory = sales_inventory[start:end]
+
+    total_amount = sum(item['amount'] for item in sales_inventory)
+
+    total_pages = (len(sales_inventory) - 1) // per_page + 1
+
+    return render_template('sales_inventory.html',
+                           sales_inventory=paginated_inventory,
+                           total_amount=total_amount,
+                           total_pages=total_pages,
+                           page=page)
+
+
+@app.route('/clear_sales_inventory')
+@login_required
+def clear_sales_inventory():
+    delete_query = "DELETE FROM sales_inventory"
+    data_execute(delete_query, commit=True)
+
+    reset_query = "UPDATE SQLITE_SEQUENCE SET seq = 0 WHERE name = 'sales_inventory'"
+    data_execute(reset_query, commit=True)
+
+    return redirect(url_for('sales_inventory'))
+
+
+@app.route('/system_logs')
+@login_required
+def system_logs():
+    query = "SELECT type, message, date FROM system_logs"
+    system_logs = data_execute(query)
+    return render_template('system_logs.html', system_logs=system_logs)
+
+
+@app.route('/clear_system_logs')
+@login_required
+def clear_system_logs():
+    delete_query = "DELETE FROM system_logs"
+    data_execute(delete_query, commit=True)
+
+    reset_query = "UPDATE SQLITE_SEQUENCE SET seq = 0 WHERE name = 'system_logs'"
+    data_execute(reset_query, commit=True)
+    return redirect(url_for('system_logs'))
+
+@app.route('/accounts')
+@login_required
+def accounts():
+    query = "SELECT idnumber, username, time_remaining FROM account"
+    result = data_execute(query)
+    if isinstance(result, dict) and 'error' in result:
+        return jsonify(result), 500  # Return JSON response with error message and 500 status code
+    if isinstance(result, list):
+        return render_template('accounts.html', accounts=result)
+    return jsonify({"error": "Unknown error"}), 500
+
+@app.route('/add_account', methods=['POST'])
+@login_required
+def add_account():
+    idnumber = request.form['idnumber']
+    username = request.form['username']
+    password = request.form['password']
+    time_remaining = '00:00:00'
+    query = "INSERT INTO account (idnumber, username, password, time_remaining) VALUES (?, ?, ?, ?)"
+    result = data_execute(query, (idnumber, username, password, time_remaining), commit=True)
+    if isinstance(result, dict) and 'error' in result:
+        return jsonify(result), 500
+    return redirect(url_for('accounts'))
+
+
+@app.route('/edit_account/<idnumber>', methods=['POST'])
+@login_required
+def edit_account(idnumber):
+    new_idnumber = request.form['idnumber']
+    new_username = request.form['username']
+    new_password = request.form['password']
+    query = "UPDATE account SET idnumber = ?, username = ?, password = ? WHERE idnumber = ?"
+    data_execute(query, (new_idnumber, new_username, new_password, idnumber), commit=True)
+    return redirect(url_for('accounts'))
+
+
+@app.route('/delete_account/<idnumber>', methods=['POST'])
+@login_required
+def delete_account(idnumber):
+    query = "DELETE FROM account WHERE idnumber = ?"
+    data_execute(query, (idnumber,), commit=True)
+    return redirect(url_for('accounts'))
+
+def time_to_seconds(time_str):
+    try:
+        time_parts = list(map(int, time_str.split(':')))
+        return timedelta(hours=time_parts[0], minutes=time_parts[1], seconds=time_parts[2]).total_seconds()
+    except Exception as e:
+        app.logger.error(f"Error in time_to_seconds: {e}")
+        return 0
+
+def seconds_to_time(seconds):
+    try:
+        return str(timedelta(seconds=seconds))
+    except Exception as e:
+        app.logger.error(f"Error in seconds_to_time: {e}")
+        return '00:00:00'
+
+@app.route('/add_time', methods=['POST'])
+def add_time():
+    try:
+        data = request.json
+        if not data:
+            app.logger.error("No JSON data received")
+            return jsonify({"success": False, "message": "No JSON data received"}), 400
+
+        idnumber = data.get('idnumber')
+        additional_time = data.get('additional_time')
+        earned_points = data.get('earned_points', 0)
+        add_to_server = data.get('add_to_server', False)
+
+        if idnumber is None or additional_time is None:
+            app.logger.error("Missing 'idnumber' or 'additional_time' in the request")
+            return jsonify({"success": False, "message": "Missing required fields"}), 400
+
+        additional_seconds = additional_time * 60
+
+        if add_to_server:
+            client_found = False
+            for client_id, client_data in clients.items():
+                if client_data['idnumber'] == idnumber:
+                    current_client_time = client_data.get('time_remaining', timedelta())
+                    current_client_seconds = time_to_seconds(str(current_client_time))
+                    updated_time_seconds = current_client_seconds + additional_seconds
+                    updated_time = seconds_to_time(updated_time_seconds)
+
+                    clients[client_id]['time_remaining'] = timedelta(
+                        hours=int(updated_time.split(':')[0]), 
+                        minutes=int(updated_time.split(':')[1]), 
+                        seconds=int(updated_time.split(':')[2])
+                    )
+
+
+                    if earned_points:   
+                        query = "UPDATE account SET earned_points = earned_points + ? WHERE idnumber = ? or username = ?"
+                        result = data_execute(query, (earned_points, idnumber, idnumber), commit=True)
+
+                        if 'error' in result:
+                            app.logger.error(f"Failed to update earned points: {result['error']}")
+                        else:
+                            app.logger.info(f"Earned points updated successfully for idnumber: {idnumber}")
+            
+                    socketio.emit('update_time', {'time_remaining': str(clients[client_id]['time_remaining'])}, room=client_id)
+
+                    client_found = True
+                    break
+
+            if client_found:
+                return jsonify({"success": True, "message": "Time updated successfully on server", "time_remaining": str(clients[client_id]['time_remaining'])}), 200
+            else:
+                return jsonify({"success": False, "message": "Client not found"}), 404
+        else:
+            query = "SELECT time_remaining, earned_points FROM account WHERE idnumber = ? or username = ?"
+            result = data_execute(query, (idnumber, idnumber), fetch_one=True)
+
+            if "error" in result:
+                app.logger.error(f"Error fetching time remaining from database: {result['error']}")
+                return jsonify({"success": False, "message": "Error fetching current time"}), 500
+
+            if result is None:
+                app.logger.error(f"No current time remaining found for idnumber: {idnumber}")
+                return jsonify({"success": False, "message": "Current time not found"}), 404
+
+            current_time_remaining = result.get('time_remaining')
+
+            current_seconds = time_to_seconds(current_time_remaining)
+            new_time_remaining_seconds = current_seconds + additional_seconds
+            new_time_remaining = seconds_to_time(new_time_remaining_seconds)
+
+            query = "UPDATE account SET time_remaining = ?, earned_points = earned_points + ? WHERE idnumber = ? or username = ?"
+            update_result = data_execute(query, (new_time_remaining, earned_points, idnumber, idnumber), commit=True)
+
+            if "error" in update_result:
+                app.logger.error(f"Failed to update time: {update_result['error']}")
+                return jsonify({"success": False, "message": "Failed to update time"}), 500
+
+            for client_id, client_data in clients.items():
+                if client_data['idnumber'] == idnumber:
+                    socketio.emit('update_time', {'time_remaining': new_time_remaining}, room=client_id)
+                    break
+
+            return jsonify({"success": True, "message": "Time updated successfully in database", "time_remaining": new_time_remaining}), 200
+
+    except Exception as e:
+        app.logger.error(f"An error occurred: {e}")
+        return jsonify({"success": False, "message": "An internal error occurred"}), 500
+
+if __name__ == '__main__':
+    #eventlet.wsgi.server(eventlet.listen((serverIP, 5000)), app)
+    socketio.run(app, host=serverIP, port=5000, debug=True) #debugging
+

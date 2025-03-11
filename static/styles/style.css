@@ -1,0 +1,197 @@
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background-color: #f0f0f0;
+}
+
+.navbar {
+    overflow: hidden;
+    background-color: #333;
+    position: fixed;
+    top: 0;
+    width: 100%;
+}
+
+.navbar a {
+    float: left;
+    display: block;
+    color: #f2f2f2;
+    text-align: center;
+    padding: 14px 16px;
+    text-decoration: none;
+}
+
+.navbar a:hover {
+    background-color: #ddd;
+    color: black;
+}
+
+.container {
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    margin: 100px auto; /* Adjusted to center the container and account for the fixed navbar */
+    max-width: 800px; /* Added to limit the width */
+    text-align: center;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+}
+
+table, th, td {
+    border: 1px solid #ccc;
+}
+
+th, td {
+    padding: 10px;
+    text-align: left;
+}
+
+th {
+    background-color: #f2f2f2;
+}
+
+h2 {
+    margin-bottom: 20px;
+}
+
+button {
+    padding: 10px 15px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.add-button {
+    background-color: #4CAF50;
+    color: white;
+    margin-bottom: 20px;
+}
+
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0, 0, 0, 0.4);
+}
+
+.modal-content {
+    background-color: #fff;
+    margin: 15% auto;
+    padding: 20px;
+    border: 1px solid #888;
+    width: 80%;
+    max-width: 500px;
+    border-radius: 8px;
+    text-align: center;
+}
+.modal-content * {
+    text-align: left;
+}
+
+.close {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+}
+
+.close:hover,
+.close:focus {
+    color: black;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+/* Media Queries for Responsiveness */
+@media (max-width: 600px) {
+    .container {
+        margin: 80px 10px;
+        padding: 15px;
+    }
+
+    .navbar a {
+        padding: 12px 10px;
+        font-size: 14px;
+    }
+
+    .modal-content {
+        width: 90%;
+        margin: 30% auto;
+        padding: 15px;
+    }
+}
+
+@media (max-width: 600px) {
+    table, th, td {
+        display: block;
+        width: 100%;
+    }
+
+    th, td {
+        box-sizing: border-box;
+        text-align: right;
+        position: relative;
+        padding-left: 50%;
+    }
+
+    th::before, td::before {
+        content: attr(data-label);
+        position: absolute;
+        left: 0;
+        width: 50%;
+        padding-left: 10px;
+        font-weight: bold;
+        text-align: left;
+    }
+}
+
+@media (max-width: 300px) {
+    .container {
+        margin: 30px 5px;
+        padding: 5px;
+    }
+
+    .navbar a {
+        padding: 6px 4px;
+        font-size: 10px;
+    }
+
+    h2 {
+        font-size: 14px;
+        margin-bottom: 10px;
+    }
+
+    table {
+        font-size: 12px;
+    }
+
+    th, td {
+        padding: 6px;
+        padding-left: 30%;
+    }
+
+    th::before, td::before {
+        width: 30%;
+        padding-left: 6px;
+    }
+
+    .modal-content {
+        width: 95%;
+        margin: 40% auto;
+        padding: 5px;
+    }
+
+    button {
+        padding: 6px 8px;
+    }
+}

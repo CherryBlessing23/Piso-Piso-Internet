@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles/style.css') }}">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/cherry-blossom.png')}}">
+    <title>Joles PisoNET | System Logs</title>
+</head>
+<body>
+    <div class="navbar">
+        <a href="/admin_dashboard">Home</a>
+        <a href="/rates">Rates</a>
+        <a href="/system_logs">System Logs</a>
+        <a href="/sales_inventory">Sales Inventory</a>
+        <a href="/accounts">Accounts</a>
+        <a href="/online_clients">Online Clients</a>
+        <a href="/admin_logout">Log Out</a>
+    </div>
+
+    <div class="container content">
+        <h2>System Logs</h2>
+        <button class="clear-button" onclick="clearLogs()">Clear Logs</button>
+        <table>
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Message</th>
+                    <th>Date</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in system_logs %}
+                <tr>
+                    <td>{{ log.type }}</td>
+                    <td>{{ log.message }}</td>
+                    <td>{{ log.date }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        function clearLogs() {
+            if (confirm('Are you sure you want to clear the system logs?')) {
+                window.location.href = '/clear_system_logs';
+            }
+        }
+    </script>
+</body>
+</html>

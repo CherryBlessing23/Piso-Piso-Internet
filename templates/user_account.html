@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Joles PisoNET | User Account</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles/style.css') }}">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/cherry-blossom.png')}}">
+    <style>
+
+        body {
+            position: relative;
+        }
+        .card {
+            position: absolute;
+            top:200px;
+            left:100px;
+            
+            /* Set width and height of the card */
+            width: 300px; /* Change this value to your preferred width */
+            height: 200px; /* Change this value to your preferred height */
+    
+            /* Add shadows to create the "card" effect */
+            box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
+            transition: 0.3s;
+            border-radius: 15px; /* Rounded corners */
+            overflow: hidden; /* Ensure content stays inside the rounded corners */
+        }
+    
+        /* On mouse-over, add a deeper shadow */
+        .card:hover {
+            box-shadow: 0 8px 16px 0 rgba(0,0,0,0.2);
+        }
+    
+        /* Add some padding inside the card container */
+        .container {
+            padding: 2px 16px;
+        }
+    
+        .button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+    
+        .confirmation {
+            display: none;
+            margin-top: 10px;
+            color: green;
+        }
+        
+
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <a href="/user_logout">Logout</a>
+    </div>
+    <br /> <br /> <br />
+    <p><strong>idnumber:</strong> {{ idnumber }}</p>
+    <p><strong>Earned Points:</strong> {{ earned_points }}</p>
+    <p><strong>Time Remaining:</strong> {{ time_remaining }}</p>
+    
+    <div class="card">
+        <div class="container">
+            <h3>1 Hour (1 Point) </h3>
+            <button class="button" onclick="redeemTime()">Redeem</button>
+          </div>
+        
+        <p class="confirmation" id="confirmationMessage">Time redeemed successfully!</p>
+        <br /> <br />
+        
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/user_account.js') }}">
+        
+    </script>
+</body>
+</html>

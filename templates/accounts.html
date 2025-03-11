@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles/style.css') }}">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/cherry-blossom.png') }}">
+    <title>Joles PisoNET | Accounts</title>
+</head>
+<body>
+    <div class="navbar">
+        <a href="/admin_dashboard">Home</a>
+        <a href="/rates">Rates</a>
+        <a href="/system_logs">System Logs</a>
+        <a href="/sales_inventory">Sales Inventory</a>
+        <a href="/accounts">Accounts</a>
+        <a href="/online_clients">Online Clients</a>
+        <a href="/admin_logout">Log Out</a>
+    </div>
+
+    <div class="container content">
+        <h2>Accounts</h2>
+        <button class="add-button" onclick="showAddAccountForm()">Add Account</button>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID Number</th>
+                    <th>Username</th>
+                    <th>Time Remaining</th>
+                    <th>Options</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for account in accounts %}
+                <tr>
+                    <td>{{ account.idnumber }}</td>  <!-- Assuming idnumber is a field in the dict -->
+                    <td>{{ account.username }}</td>  <!-- Assuming username is a field in the dict -->
+                    <td>{{ account.time_remaining }}</td>  <!-- Assuming time_remaining is a field in the dict -->
+                    <td>
+                        <button class="add-time-button" onclick="showAddTimeForm('{{ account.idnumber }}')">Add Time</button>
+                        <button class="add-time-sales-button" onclick="showAddTimeWithSales('{{ account.idnumber }}')">Add Time (Sales)</button> 
+                        <button class="edit-button" onclick="showEditAccountForm('{{ account.idnumber }}', '{{ account.username }}')">Edit</button>
+                        <form action="/delete_account/{{ account.idnumber }}" method="POST" style="display:inline;">
+                            <button type="submit" class="delete-button">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- The Modal for Add/Edit Account -->
+    <div id="accountModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeAccountModal()">&times;</span>
+            <h3 id="accountFormTitle">Add Account</h3>
+            <form id="accountFormAction" action="/add_account" method="POST">
+                <label for="idnumber">ID Number:</label>
+                <input type="text" id="idnumber" name="idnumber" required><br><br>
+                <label for="username">Username:</label>
+                <input type="text" id="username" name="username" required><br><br>
+                <label for="password">Password:</label>
+                <input type="password" id="password" name="password" required><br><br>
+                <button type="submit" class="add-button">Submit</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="timeModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeTimeModal()">&times;</span>
+            <h3>Add Time</h3>
+            <form id="timeForm">
+                <input type="hidden" id="idnumberTime" name="idnumber">
+                <input type="hidden" id="add_to_server" value="false">
+                <label for="additional_time">Additional Time (minutes):</label>
+                <input type="number" id="additional_time" name="additional_time" required><br><br>
+                <button type="submit" class="add-button">Submit</button>
+            </form>
+        </div>
+    </div>
+    <div id="timeSalesModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeTimeSalesModal()">&times;</span>
+            <h3>Add Time with Sales</h3>
+            <form id="timeSalesForm">
+                <input type="hidden" id="idnumberTimeSales" name="idnumber">
+                <input type="hidden" id="add_to_server" value="false">
+                <label for="additional_time_sales">Additional Time (minutes):</label>
+                <input type="number" id="additional_time_sales" name="additional_time" required><br><br>
+                <button type="button" class="add-button" onclick="addTimeWithSales()">Submit</button> 
+            </form>
+        </div>
+    </div>
+    <script>
+        document.getElementById('timeForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            
+            const idnumber = document.getElementById('idnumberTime').value;
+            const additional_time = parseInt(document.getElementById('additional_time').value, 10);
+
+            // Validate inputs
+            if (!idnumber || isNaN(additional_time) || additional_time <= 0) {
+                alert('Please enter valid idnumber and additional time.');
+                return;
+            }
+
+            fetch('/add_time', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ idnumber: idnumber, additional_time: additional_time, add_to_server: false })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    alert('Time updated successfully');
+                    closeTimeModal(); // Ensure this function is defined and closes the modal properly
+                } else {
+                    alert(`Error: ${data.message}`);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while updating the time.');
+            });
+        });
+
+        function showAddAccountForm() {
+            document.getElementById('accountModal').style.display = 'block';
+            document.getElementById('accountFormTitle').textContent = 'Add Account';
+            document.getElementById('accountFormAction').action = '/add_account';
+            document.getElementById('idnumber').value = '';
+            document.getElementById('username').value = '';
+            document.getElementById('password').value = '';
+            document.getElementById('password').style.display = 'block';
+        }
+
+        function showEditAccountForm(idnumber, username) {
+            document.getElementById('accountModal').style.display = 'block';
+            document.getElementById('accountFormTitle').textContent = 'Edit Account';
+            document.getElementById('accountFormAction').action = '/edit_account/' + idnumber;
+            document.getElementById('idnumber').value = idnumber;
+            document.getElementById('username').value = username;
+            document.getElementById('password').style.display = 'block'; // Hide password field for editing
+        }
+
+        function showAddTimeForm(idnumber) {
+            document.getElementById('timeModal').style.display = 'block';
+            document.getElementById('idnumberTime').value = idnumber;
+        }
+
+        function showAddTimeWithSales(idnumber){
+            document.getElementById('timeSalesModal').style.display = 'block';
+            document.getElementById('idnumberTimeSales').value = idnumber; // Corrected to use idnumberTimeSales
+        }
+
+        function closeAccountModal() {
+            document.getElementById('accountModal').style.display = 'none';
+        }
+
+        function closeTimeModal() {
+            document.getElementById('timeModal').style.display = 'none';
+        }
+        
+        function closeTimeSalesModal(){
+            document.getElementById('timeSalesModal').style.display = 'none';
+        }
+
+        // Close the modal when clicking outside of it
+        window.onclick = function(event) {
+            var modal = document.getElementById('accountModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+            modal = document.getElementById('timeModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+            modal = document.getElementById('timeSalesModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        function calculateAmountBasedOnTime(rates, additional_time) {
+            let totalAmount = 0;
+
+            rates.forEach(rate => {
+                const amount = rate.amount;
+                const timeSeconds = rate.total_seconds; // Total seconds for 1 unit
+
+                // Calculate amount based on additional time in seconds
+                const totalUnits = additional_time / (timeSeconds / 60);
+                const calculatedAmount = totalUnits * amount;
+
+                totalAmount += calculatedAmount;
+            });
+
+            return totalAmount;
+        }
+
+
+        function addTimeWithSales() {
+            const idnumber = document.getElementById('idnumberTimeSales').value;
+            const additional_time = parseInt(document.getElementById('additional_time_sales').value, 10);
+            console.log("idnumber:", idnumber);
+            console.log("additional time:", additional_time);
+
+            // Validate inputs
+            if (!idnumber || isNaN(additional_time) || additional_time <= 0) {
+                alert('Please enter valid idnumber and additional time.');
+                return;
+            }
+
+            fetch('/get_rates')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        const rates = data.rates;
+
+                        const amount = calculateAmountBasedOnTime(rates, additional_time);
+                        
+                        // Create a new Date object (current date and time in user's local timezone)
+                        const currentDate = new Date();
+
+                        // Get the components of the date and time
+                        const year = currentDate.getFullYear();
+                        /*const month = ('0' + (currentDate.getMonth() + 1)).slice(-2); // Months are zero-indexed, so we add 1
+                        const day = ('0' + currentDate.getDate()).slice(-2);
+                        const hours = ('0' + currentDate.getHours()).slice(-2);
+                        const minutes = ('0' + currentDate.getMinutes()).slice(-2);
+                        const seconds = ('0' + currentDate.getSeconds()).slice(-2);
+
+                        // Construct the formatted date and time string
+                        const formattedDateTime = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;*/
+
+                        const formattedDateTime = `${currentDate.getFullYear()}-${('0' + (currentDate.getMonth() + 1)).slice(-2)}-${('0' + currentDate.getDate()).slice(-2)} ${('0' + currentDate.getHours()).slice(-2)}:${('0' + currentDate.getMinutes()).slice(-2)}:${('0' + currentDate.getSeconds()).slice(-2)}`;
+
+                        const payload = {
+                            amount: amount,
+                            account_id: idnumber,
+                            date: formattedDateTime
+                        };
+
+                        return fetch('/add_sales_inventory', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(payload)
+                        });
+                    } else {
+                        throw new Error(`Error fetching rates: ${data.message}`);
+                    }
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.Success) {
+                        // Proceed to update time for the account in the database
+                        const payloadTime = {
+                            idnumber: idnumber,
+                            additional_time: additional_time,
+                            add_to_server: false
+                        };
+
+                        return fetch('/add_time', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(payloadTime)
+                        });
+                    } else {
+                        throw new Error(`Error adding time with sales: ${data.message}`);
+                    }
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        alert('Time updated successfully');
+                        closeTimeSalesModal(); // Close modal or perform other actions upon success
+                    } else {
+                        throw new Error(`Error updating time: ${data.message}`);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while adding time with sales.');
+                });
+        }
+    </script>
+</body>
+</html>

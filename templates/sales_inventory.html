@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles/style.css') }}">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/cherry-blossom.png')}}">
+    <title>Joles PisoNET | Sales Inventory</title>
+</head>
+<body>
+    <div class="navbar">
+        <a href="/admin_dashboard">Home</a>
+        <a href="/rates">Rates</a>
+        <a href="/system_logs">System Logs</a>
+        <a href="/sales_inventory">Sales Inventory</a>
+        <a href="/accounts">Accounts</a>
+        <a href="/online_clients">Online Clients</a>
+        <a href="/admin_logout">Log Out</a>
+    </div>
+
+    <div class="container content">
+        <h2>Sales Inventory</h2>
+        <h3>Total Amount: {{ total_amount }}</h3><br>
+        <button class="clear-button" onclick="clearInventory()">Clear Inventory</button><br>
+        <table>
+            <thead>
+                <tr>
+                    <th>Amount</th>
+                    <th>Account ID</th>
+                    <th>Date</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in sales_inventory %}
+                <tr>
+                    <td>{{ item.amount }}</td>
+                    <td>{{ item.account_id }}</td>
+                    <td>{{ item.date }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="pagination">
+            {% if total_pages > 1 %}
+                {% if page > 1 %}
+                    <a href="?page=1">First</a>
+                    <a href="?page={{ page - 1 }}">Previous</a>
+                {% endif %}
+                
+                {% for p in range(1, total_pages + 1) %}
+                    {% if p == page %}
+                        <span>{{ p }}</span>
+                    {% else %}
+                        <a href="?page={{ p }}">{{ p }}</a>
+                    {% endif %}
+                {% endfor %}
+                
+                {% if page < total_pages %}
+                    <a href="?page={{ page + 1 }}">Next</a>
+                    <a href="?page={{ total_pages }}">Last</a>
+                {% endif %}
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        function clearInventory() {
+            if (confirm('Are you sure you want to clear the sales inventory?')) {
+                window.location.href = '/clear_sales_inventory';
+            }
+        }
+    </script>
+</body>
+</html>

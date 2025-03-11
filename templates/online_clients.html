@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Joles PisoNET | Online Clients</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles/style.css') }}">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/cherry-blossom.png')}}">
+</head>
+<body>
+    <div class="navbar">
+        <a href="/admin_dashboard">Home</a>
+        <a href="/rates">Rates</a>
+        <a href="/system_logs">System Logs</a>
+        <a href="/sales_inventory">Sales Inventory</a>
+        <a href="/accounts">Accounts</a>
+        <a href="/online_clients">Online Clients</a>
+        <a href="/admin_logout">Log Out</a>
+    </div>
+
+    <div class="container content">
+        <h2>Online Clients</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Client ID</th>
+                    <th>ID Number</th>
+                    <th>Username</th>
+                    <th>Last Heartbeat</th>
+                    <th>Time Remaining</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for client_id, client_data in clients.items() %}
+                    <tr>
+                        <td data-label="Client ID">{{ client_id }}</td>
+                        <td data-label="ID Number">{{client_data.idnumber}}</td>
+                        <td data-label="Username">{{ client_data.username }}</td>
+                        <td data-label="Last Heartbeat">{{ client_data.last_heartbeat }}</td>
+                        <td data-label="Time Remaining">{{ client_data.time_remaining }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles/style.css') }}">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/cherry-blossom.png')}}">
+    <title>Joles PisoNET | Rates</title>
+</head>
+<body>
+    <div class="navbar">
+        <a href="/admin_dashboard">Home</a>
+        <a href="/rates">Rates</a>
+        <a href="/system_logs">System Logs</a>
+        <a href="/sales_inventory">Sales Inventory</a>
+        <a href="/accounts">Accounts</a>
+        <a href="/online_clients">Online Clients</a>
+        <a href="/admin_logout">Log Out</a>
+    </div>
+
+    <div class="container content">
+        <h2>Rates</h2>
+        <button class="add-button" onclick="showAddRateForm()">Add Rate</button>
+        <table>
+            <thead>
+                <tr>
+                    <th>Amount</th>
+                    <th>Time</th>
+                    <th>Options</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rate in rates %}
+                <tr>
+                    <td>{{ rate.amount }}</td>
+                    <td>{{ rate.days }}d {{ rate.hours }}h {{ rate.minutes }}m</td>
+                    <td>
+                        <button class="edit-button" onclick="showEditRateForm('{{ rate.idrates }}', '{{ rate.amount }}', '{{ rate.days }}', '{{ rate.hours }}', '{{ rate.minutes }}')">Edit</button>
+                        <form action="/delete_rate/{{ rate.idrates }}" method="POST" style="display:inline;">
+                            <button type="submit" class="delete-button">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <h3>Points Multiplier: {{ points_multiplier }}</h3> 
+        <button class="edit-button" onclick="showEditPointsMultiplierForm()">Edit Points Multiplier</button>
+
+    </div>
+
+    <div class="container content">
+        <h2>Rates (Guest)</h2>
+        <button class="add-button" onclick="showAddRateGuestForm()">Add Rate</button>
+        <table>
+            <thead>
+                <tr>
+                    <th>Amount</th>
+                    <th>Time Guest</th>
+                    <th>Options</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rate in rates_guest %}
+                <tr>
+                    <td>{{ rate.amount_guest }}</td>
+                    <td>{{ rate.days_guest }}d {{ rate.hours_guest }}h {{ rate.minutes_guest }}m</td>
+                    <td>
+                        <button class="edit-button" onclick="showEditRateGuestForm('{{ rate.idrates_guest }}', '{{ rate.amount_guest }}', '{{ rate.days }}', '{{ rate.hours }}', '{{ rate.minutes }}')">Edit</button>
+                        <form action="/guest_delete_rate/{{ rate.idrates_guest }}" method="POST" style="display:inline;">
+                            <button type="submit" class="delete-button">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- The Modal -->
+    <div id="rateModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeRateModal()">&times;</span>
+            <h3 id="formTitle">Add Rate</h3>
+            <form id="rateFormAction" action="/add_rate" method="POST">
+                <label for="amount">Amount:</label>
+                <input type="text" id="amount" name="amount" required><br><br>
+                <label for="days">Days:</label>
+                <input type="number" id="days" name="days" min="0" required><br><br>
+                <label for="hours">Hours:</label>
+                <input type="number" id="hours" name="hours" min="0" max="23" required><br><br>
+                <label for="minutes">Minutes:</label>
+                <input type="number" id="minutes" name="minutes" min="0" max="59" required><br><br>
+                <button type="submit" class="add-button">Submit</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="rate_guestModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeRateGuestModal()">&times;</span>
+            <h3 id="formGuestTitle">Add Rate</h3>
+            <form id="rate_guestFormAction" action="/add_rate_guest" method="POST">
+                <label for="amount_guest">Amount:</label>
+                <input type="text" id="amount_guest" name="amount_guest" required><br><br>
+                <label for="days_guest">Days:</label>
+                <input type="number" id="days_guest" name="days_guest" min="0" required><br><br>
+                <label for="hours_guest">Hours:</label>
+                <input type="number" id="hours_guest" name="hours_guest" min="0" max="23" required><br><br>
+                <label for="minutes_guest">Minutes:</label>
+                <input type="number" id="minutes_guest" name="minutes_guest" min="0" max="59" required><br><br>
+                <button type="submit" class="add-button">Submit</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="edit-points-multiplier-form" style="display:none;">
+        <form action="/edit_points_multiplier" method="POST">
+            <label for="points_multiplier">New Points Multiplier:</label>
+            <input type="number" id="points_multiplier" name="points_multiplier" value="{{ points_multiplier }}" step="0.001" required>
+            <button type="submit">Update</button>
+            <button type="button" onclick="hideEditPointsMultiplierForm()">Cancel</button>
+        </form>
+    </div>
+
+    <script>
+        function showAddRateForm() {
+            document.getElementById('rateModal').style.display = 'block';
+            document.getElementById('formTitle').textContent = 'Add Rate';
+            document.getElementById('rateFormAction').action = '/add_rate';
+            document.getElementById('amount').value = '';
+            document.getElementById('days').value = '';
+            document.getElementById('hours').value = '';
+            document.getElementById('minutes').value = '';
+        }
+
+        function showEditRateForm(id, amount, days, hours, minutes) {
+            document.getElementById('rateModal').style.display = 'block';
+            document.getElementById('formTitle').textContent = 'Edit Rate';
+            document.getElementById('rateFormAction').action = '/edit_rate/' + id;
+            document.getElementById('amount').value = amount;
+            document.getElementById('days').value = days;
+            document.getElementById('hours').value = hours;
+            document.getElementById('minutes').value = minutes;
+        }
+        
+        function showEditPointsMultiplierForm(pointsMultiplier) {
+            document.getElementById('edit-points-multiplier-form').style.display = 'block';
+            document.getElementById('points_multiplier').value = pointsMultiplier; // Set the new points multiplier
+        }
+
+        function hideEditPointsMultiplierForm() {
+            document.getElementById('edit-points-multiplier-form').style.display = 'none';
+        }
+
+        function closeRateModal() {
+            document.getElementById('rateModal').style.display = 'none';
+        }
+
+        // Close the modal when clicking outside of it
+        window.onclick = function(event) {
+            var modal = document.getElementById('rateModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        //Time guest
+        function showAddRateGuestForm() {
+            document.getElementById('rate_guestModal').style.display = 'block';
+            document.getElementById('formGuestTitle').textContent = 'Add Rate (Guest)';
+            document.getElementById('rate_guestFormAction').action = '/guest_add_rate';
+            document.getElementById('amount_guest').value = '';
+            document.getElementById('days_guest').value = '';
+            document.getElementById('hours_guest').value = '';
+            document.getElementById('minutes_guest').value = '';
+        }
+        
+        function showEditRateGuestForm(id, amount, days, hours, minutes) {
+            document.getElementById('rate_guestModal').style.display = 'block';
+            document.getElementById('formGuestTitle').textContent = 'Edit Rate';
+            document.getElementById('rate_guestFormAction').action = '/guest_edit_rate/' + id;
+            document.getElementById('amount_guest').value = amount;
+            document.getElementById('days_guest').value = days;
+            document.getElementById('hours_guest').value = hours;
+            document.getElementById('minutes_guest').value = minutes;
+        }
+
+        function closeRateGuestModal() {
+            document.getElementById('rate_guestModal').style.display = 'none';
+        }
+
+
+        // Close the modal when clicking outside of it
+        window.onclick = function(event) {
+            var modal = document.getElementById('rate_guestModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
